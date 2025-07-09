@@ -1,6 +1,6 @@
-# FlowSynx SQLite Plugin
+## FlowSynx SQLite Plugin
 
-The SQLite Plugin is a pre-packaged, plug-and-play integration component for the FlowSynx engine. It enables executing SQLite queries with configurable parameters such as database file paths, SQL templates, and runtime parameters. Designed for FlowSynx’s no-code/low-code automation workflows, this plugin simplifies database integration, data retrieval, and transformation tasks for lightweight, file-based databases.
+The SQLite Plugin is a pre-packaged, plug-and-play integration component for the FlowSynx engine. It enables executing SQLite queries with configurable parameters such as database file paths, SQL templates, and runtime parameters. Designed for FlowSynxâ€™s no-code/low-code automation workflows, this plugin simplifies database integration, data retrieval, and transformation tasks for lightweight, file-based databases.
 
 This plugin is automatically installed by the FlowSynx engine when selected within the platform. It is not intended for manual installation or standalone developer use outside the FlowSynx environment.
 
@@ -87,4 +87,4 @@ When using SQLite within FlowSynx, keep the following considerations in mind:
 
 ## License
 
-© FlowSynx. All rights reserved.
+Â© FlowSynx. All rights reserved.
