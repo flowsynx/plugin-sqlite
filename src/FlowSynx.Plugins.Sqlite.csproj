@@ -17,6 +17,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<InternalsVisibleTo Include="FlowSynx.Plugins.Sqlite.UnitTests" />
+	</ItemGroup>
+	
+	<ItemGroup>
 		<Compile Update="Resources.Designer.cs">
 			<DesignTime>True</DesignTime>
 			<AutoGen>True</AutoGen>

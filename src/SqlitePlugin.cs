@@ -1,7 +1,7 @@
-﻿using FlowSynx.PluginCore.Helpers;
-using FlowSynx.PluginCore;
+﻿using FlowSynx.PluginCore;
 using FlowSynx.PluginCore.Extensions;
 using FlowSynx.Plugins.Sqlite.Models;
+using FlowSynx.Plugins.Sqlite.Services;
 using Microsoft.Data.Sqlite;
 
 namespace FlowSynx.Plugins.Sqlite;
@@ -9,8 +9,18 @@ namespace FlowSynx.Plugins.Sqlite;
 public class SqlitePlugin: IPlugin
 {
     private IPluginLogger? _logger;
+    private readonly IGuidProvider _guidProvider;
+    private readonly IReflectionGuard _reflectionGuard;
     private SqlitePluginSpecifications _sqliteSpecifications = null!;
     private bool _isInitialized;
+
+    public SqlitePlugin() : this(new GuidProvider(), new DefaultReflectionGuard()) { }
+
+    internal SqlitePlugin(IGuidProvider guidProvider, IReflectionGuard reflectionGuard)
+    {
+        _guidProvider = guidProvider ?? throw new ArgumentNullException(nameof(guidProvider));
+        _reflectionGuard = reflectionGuard ?? throw new ArgumentNullException(nameof(reflectionGuard));
+    }
 
     public PluginMetadata Metadata => new PluginMetadata
     {
@@ -18,8 +28,8 @@ public class SqlitePlugin: IPlugin
         Name = "Sqlite",
         CompanyName = "FlowSynx",
         Description = Resources.PluginDescription,
-        Version = new Version(1, 1, 0),
-        Category = PluginCategory.Data,
+        Version = new Version(1, 1, 1),
+        Category = PluginCategory.Database,
         Authors = new List<string> { "FlowSynx" },
         Copyright = "© FlowSynx. All rights reserved.",
         Icon = "flowsynx.png",
@@ -44,9 +54,7 @@ public class SqlitePlugin: IPlugin
 
     public Task Initialize(IPluginLogger logger)
     {
-        if (ReflectionHelper.IsCalledViaReflection())
-            throw new InvalidOperationException(Resources.ReflectionBasedAccessIsNotAllowed);
-
+        ThrowIfReflection();
         ArgumentNullException.ThrowIfNull(logger);
         _sqliteSpecifications = Specifications.ToObject<SqlitePluginSpecifications>();
         _logger = logger;
@@ -57,12 +65,8 @@ public class SqlitePlugin: IPlugin
     public async Task<object?> ExecuteAsync(PluginParameters parameters, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        if (ReflectionHelper.IsCalledViaReflection())
-            throw new InvalidOperationException(Resources.ReflectionBasedAccessIsNotAllowed);
-
-        if (!_isInitialized)
-            throw new InvalidOperationException($"Plugin '{Metadata.Name}' v{Metadata.Version} is not initialized.");
+        ThrowIfReflection();
+        ThrowIfNotInitialized();
 
         var inputParameter = parameters.ToObject<InputParameter>();
         var operation = inputParameter.Operation;
@@ -73,6 +77,18 @@ public class SqlitePlugin: IPlugin
         }
 
         throw new NotSupportedException($"Sqlite plugin: Operation '{operation}' is not supported.");
+    }
+
+    private void ThrowIfReflection()
+    {
+        if (_reflectionGuard.IsCalledViaReflection())
+            throw new InvalidOperationException(Resources.ReflectionBasedAccessIsNotAllowed);
+    }
+
+    private void ThrowIfNotInitialized()
+    {
+        if (!_isInitialized)
+            throw new InvalidOperationException($"Plugin '{Metadata.Name}' v{Metadata.Version} is not initialized.");
     }
 
     private async Task ExecuteNonQueryAsync(InputParameter parameters, CancellationToken cancellationToken)
@@ -127,7 +143,7 @@ public class SqlitePlugin: IPlugin
             }
 
             _logger?.LogInfo($"Query executed successfully. Rows returned: {result.Count}.");
-            string key = $"{Guid.NewGuid().ToString()}";
+            string key = $"{_guidProvider.NewGuid()}";
             return new PluginContext(key, "Data")
             {
                 Format = "Database",
