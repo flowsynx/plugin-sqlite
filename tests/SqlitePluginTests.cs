@@ -57,7 +57,7 @@ public class SqlitePluginTests
     {
         var plugin = CreatePlugin();
         var input = new InputParameter { Sql = null! };
-        var method = typeof(SqlitePlugin).GetMethod("GetSqlAndParameters", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var method = typeof(SqlitePlugin).GetMethod("ExtractSqlParameters", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
         var ex = Assert.Throws<TargetInvocationException>(() => method.Invoke(plugin, new object[] { input }));
         Assert.IsType<ArgumentException>(ex.InnerException);
         Assert.Contains("Missing 'sql' parameter", ex.InnerException!.Message);

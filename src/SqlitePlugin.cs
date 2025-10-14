@@ -22,13 +22,13 @@ public class SqlitePlugin: IPlugin
         _reflectionGuard = reflectionGuard ?? throw new ArgumentNullException(nameof(reflectionGuard));
     }
 
-    public PluginMetadata Metadata => new PluginMetadata
+    public PluginMetadata Metadata => new()
     {
         Id = Guid.Parse("6457ab5d-0487-4c06-a313-1ebf789f2b52"),
         Name = "Sqlite",
         CompanyName = "FlowSynx",
         Description = Resources.PluginDescription,
-        Version = new Version(1, 1, 1),
+        Version = new Version(1, 2, 0),
         Category = PluginCategory.Database,
         Authors = new List<string> { "FlowSynx" },
         Copyright = "© FlowSynx. All rights reserved.",
@@ -44,11 +44,12 @@ public class SqlitePlugin: IPlugin
 
     public Type SpecificationsType => typeof(SqlitePluginSpecifications);
 
-    private Dictionary<string, Func<InputParameter, CancellationToken, Task<object?>>> OperationMap => new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["query"] = async (parameters, cancellationToken) => await ExecuteQueryAsync(parameters, cancellationToken),
-        ["execute"] = async (parameters, cancellationToken) => { await ExecuteNonQueryAsync(parameters, cancellationToken); return null; }
-    };
+    private Dictionary<string, Func<InputParameter, CancellationToken, Task<object?>>> OperationMap =>
+        new Dictionary<string, Func<InputParameter, CancellationToken, Task<object?>>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["query"] = async (p, t) => await ExecuteQueryAsync(p, t),
+            ["execute"] = async (p, t) => { await ExecuteNonQueryAsync(p, t); return null; }
+        };
 
     public IReadOnlyCollection<string> SupportedOperations => OperationMap.Keys;
 
@@ -56,9 +57,11 @@ public class SqlitePlugin: IPlugin
     {
         ThrowIfReflection();
         ArgumentNullException.ThrowIfNull(logger);
+
         _sqliteSpecifications = Specifications.ToObject<SqlitePluginSpecifications>();
         _logger = logger;
         _isInitialized = true;
+
         return Task.CompletedTask;
     }
 
@@ -68,83 +71,68 @@ public class SqlitePlugin: IPlugin
         ThrowIfReflection();
         ThrowIfNotInitialized();
 
-        var inputParameter = parameters.ToObject<InputParameter>();
-        var operation = inputParameter.Operation;
+        var input = parameters.ToObject<InputParameter>();
+        if (!OperationMap.TryGetValue(input.Operation, out var handler))
+            throw new NotSupportedException($"Sqlite plugin: Operation '{input.Operation}' is not supported.");
 
-        if (OperationMap.TryGetValue(operation, out var handler))
-        {
-            return await handler(inputParameter, cancellationToken);
-        }
-
-        throw new NotSupportedException($"Sqlite plugin: Operation '{operation}' is not supported.");
+        return await handler(input, cancellationToken);
     }
 
-    private void ThrowIfReflection()
-    {
-        if (_reflectionGuard.IsCalledViaReflection())
-            throw new InvalidOperationException(Resources.ReflectionBasedAccessIsNotAllowed);
-    }
+    #region private methods
 
-    private void ThrowIfNotInitialized()
+    private async Task ExecuteNonQueryAsync(InputParameter input, CancellationToken token)
     {
-        if (!_isInitialized)
-            throw new InvalidOperationException($"Plugin '{Metadata.Name}' v{Metadata.Version} is not initialized.");
-    }
-
-    private async Task ExecuteNonQueryAsync(InputParameter parameters, CancellationToken cancellationToken)
-    {
-        var (sql, sqlParams) = GetSqlAndParameters(parameters);
+        var (sql, sqlParams) = ExtractSqlParameters(input);
+        var connectionString = _sqliteSpecifications.ConnectionString;
 
         try
         {
-            var connection = new SqliteConnection(_sqliteSpecifications.ConnectionString);
-            await connection.OpenAsync();
-            using var cmd = new SqliteCommand(parameters.Sql, connection);
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(token);
 
-            AddParameters(cmd, sqlParams);
+            var context = ParseInputData(input.Data);
 
-            cancellationToken.ThrowIfCancellationRequested();
-
-            int affectedRows = await cmd.ExecuteNonQueryAsync(cancellationToken);
-            _logger?.LogInfo($"Non-query executed successfully. Rows affected: {affectedRows}.");
+            if (context.StructuredData?.Count > 0)
+            {
+                await ExecuteStructuredDataAsync(connection, sql, context, token);
+            }
+            else
+            {
+                await ExecuteSingleNonQueryAsync(connection, sql, sqlParams, token);
+            }
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Error executing Sqlite sql statement. Error: {ex.Message}");
+            _logger?.LogError($"Error executing Sqlite SQL statement: {ex.Message}");
             throw;
         }
     }
 
-    private async Task<PluginContext> ExecuteQueryAsync(InputParameter parameters, CancellationToken cancellationToken)
+    private async Task<PluginContext> ExecuteQueryAsync(InputParameter input, CancellationToken token)
     {
-        var (sql, sqlParams) = GetSqlAndParameters(parameters);
+        var (sql, sqlParams) = ExtractSqlParameters(input);
+        var connectionString = _sqliteSpecifications.ConnectionString;
 
         try
         {
             var result = new List<Dictionary<string, object>>();
-            var connection = new SqliteConnection(_sqliteSpecifications.ConnectionString);
-            await connection.OpenAsync();
-            using var cmd = new SqliteCommand(sql, connection);
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(token);
 
+            await using var cmd = new SqliteCommand(sql, connection);
             AddParameters(cmd, sqlParams);
 
-            cancellationToken.ThrowIfCancellationRequested();
-
-            using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await cmd.ExecuteReaderAsync(token);
+            while (await reader.ReadAsync(token))
             {
-                var row = new Dictionary<string, object>();
-                for (int i = 0; i < reader.FieldCount; i++)
-                {
-                    row[reader.GetName(i)] = reader.GetValue(i);
-                }
+                var row = Enumerable.Range(0, reader.FieldCount)
+                                    .ToDictionary(reader.GetName, reader.GetValue);
                 result.Add(row);
             }
 
             _logger?.LogInfo($"Query executed successfully. Rows returned: {result.Count}.");
-            string key = $"{_guidProvider.NewGuid()}";
-            return new PluginContext(key, "Data")
+
+            return new PluginContext(_guidProvider.NewGuid().ToString(), "Data")
             {
                 Format = "Database",
                 StructuredData = result
@@ -152,24 +140,45 @@ public class SqlitePlugin: IPlugin
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Error executing Sqlite sql statement. Error: {ex.Message}");
+            _logger?.LogError($"Error executing Sqlite query: {ex.Message}");
             throw;
         }
     }
 
-    private (string Sql, Dictionary<string, object> Parameters) GetSqlAndParameters(InputParameter parameters)
+    private async Task ExecuteStructuredDataAsync(
+        SqliteConnection connection, string sql, PluginContext context, CancellationToken token)
     {
-        if (string.IsNullOrEmpty(parameters.Sql))
-            throw new ArgumentException("Missing 'sql' parameter.");
-        
-        Dictionary<string, object> sqlParams = new();
+        int totalAffected = 0;
 
-        if (parameters.Params is Dictionary<string, object> paramDict)
+        if (context.StructuredData is not null)
         {
-            sqlParams = paramDict;
+            foreach (var row in context.StructuredData)
+            {
+                await using var cmd = new SqliteCommand(sql, connection);
+                AddParameters(cmd, row);
+                totalAffected += await cmd.ExecuteNonQueryAsync(token);
+            }
         }
 
-        return (parameters.Sql, sqlParams);
+        _logger?.LogInfo($"Executed structured SQL for {context.StructuredData?.Count} rows. Total affected: {totalAffected}");
+    }
+
+    private async Task ExecuteSingleNonQueryAsync(
+        SqliteConnection connection, string sql, Dictionary<string, object> sqlParams, CancellationToken token)
+    {
+        await using var cmd = new SqliteCommand(sql, connection);
+        AddParameters(cmd, sqlParams);
+        int affected = await cmd.ExecuteNonQueryAsync(token);
+        _logger?.LogInfo($"Non-query executed successfully. Rows affected: {affected}.");
+    }
+
+    private (string Sql, Dictionary<string, object> Params) ExtractSqlParameters(InputParameter input)
+    {
+        if (string.IsNullOrWhiteSpace(input.Sql))
+            throw new ArgumentException("Missing 'sql' parameter.");
+
+        var sqlParams = input.Params as Dictionary<string, object> ?? new();
+        return (input.Sql, sqlParams);
     }
 
     private void AddParameters(SqliteCommand cmd, Dictionary<string, object>? parameters)
@@ -226,4 +235,31 @@ public class SqlitePlugin: IPlugin
             }
         }
     }
+
+    private PluginContext ParseInputData(object? data)
+    {
+        if (data is null)
+            throw new ArgumentNullException(nameof(data), "Input data cannot be null.");
+
+        return data switch
+        {
+            PluginContext context => context,
+            IEnumerable<PluginContext> => throw new NotSupportedException("List of PluginContext is not supported."),
+            _ => throw new NotSupportedException("Unsupported input data format.")
+        };
+    }
+
+    private void ThrowIfReflection()
+    {
+        if (_reflectionGuard.IsCalledViaReflection())
+            throw new InvalidOperationException(Resources.ReflectionBasedAccessIsNotAllowed);
+    }
+
+    private void ThrowIfNotInitialized()
+    {
+        if (!_isInitialized)
+            throw new InvalidOperationException($"Plugin '{Metadata.Name}' v{Metadata.Version} is not initialized.");
+    }
+
+    #endregion
 }
